@@ -1,8 +1,11 @@
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from typing import Optional
+from database import db, create_document, get_documents
+from schemas import Complaint as ComplaintModel, Panchayat as PanchayatModel, Funds as FundsModel
 
-app = FastAPI()
+app = FastAPI(title="Ruralytics JSON-like API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -14,56 +17,102 @@ app.add_middleware(
 
 @app.get("/")
 def read_root():
-    return {"message": "Hello from FastAPI Backend!"}
+    return {"name": "Ruralytics API", "status": "ok"}
 
-@app.get("/api/hello")
-def hello():
-    return {"message": "Hello from the backend API!"}
+# Helper to convert Mongo documents
 
+def _serialize(doc):
+    if not doc:
+        return doc
+    d = dict(doc)
+    if "_id" in d:
+        d["id"] = str(d.pop("_id"))
+    return d
+
+# Panchayats endpoints (JSON Server-style)
+@app.get("/panchayats")
+def list_panchayats():
+    items = get_documents("panchayat")
+    data = [_serialize(x) for x in items]
+    if not data:
+        data = [
+            {"panchayat_id":"PNC001","name":"Arjunpur","district":"Solan","state":"Himachal Pradesh"},
+            {"panchayat_id":"PNC002","name":"Bhavani","district":"Krishnagiri","state":"Tamil Nadu"},
+            {"panchayat_id":"PNC003","name":"Chandigarh Rural","district":"Chandigarh","state":"Chandigarh"}
+        ]
+    return data
+
+@app.post("/panchayats")
+def create_panchayat(payload: PanchayatModel):
+    inserted_id = create_document("panchayat", payload)
+    return {"id": inserted_id, **payload.model_dump()}
+
+# Complaints endpoints (GET + POST)
+@app.get("/complaints")
+def list_complaints():
+    items = get_documents("complaint")
+    return [_serialize(x) for x in items]
+
+@app.post("/complaints")
+def create_complaint(payload: ComplaintModel):
+    if not payload.name or not payload.description:
+        raise HTTPException(status_code=400, detail="Name and description are required")
+    inserted_id = create_document("complaint", payload)
+    return {"id": inserted_id, **payload.model_dump()}
+
+# Funds endpoints
+@app.get("/funds")
+def list_funds():
+    items = get_documents("funds")
+    data = [_serialize(x) for x in items]
+    if not data:
+        data = [
+            {"panchayat_id":"PNC001","year":2024,"allocated":120,"utilized":95,"pending":25},
+            {"panchayat_id":"PNC001","year":2023,"allocated":110,"utilized":90,"pending":20},
+            {"panchayat_id":"PNC002","year":2024,"allocated":130,"utilized":100,"pending":30},
+            {"panchayat_id":"PNC003","year":2024,"allocated":100,"utilized":70,"pending":30}
+        ]
+    return data
+
+@app.post("/funds")
+def create_funds(payload: FundsModel):
+    inserted_id = create_document("funds", payload)
+    return {"id": inserted_id, **payload.model_dump()}
+
+# Analysis endpoint (AI-style mock recommendations)
+@app.get("/analysis")
+def list_analysis(panchayat_id: Optional[str] = None):
+    filter_dict = {"panchayat_id": panchayat_id} if panchayat_id else {}
+    items = get_documents("analysis", filter_dict)
+    if not items:
+        defaults = [
+            {
+                "title": "Boost School Attendance",
+                "points": ["Introduce weekly attendance dashboards", "Provide bicycle support for long-distance students"],
+                "sdg_tag": "SDG4",
+            },
+            {
+                "title": "Strengthen Primary Healthcare",
+                "points": ["Mobile immunization clinics every Friday", "Digitize maternal health tracking"],
+                "sdg_tag": "SDG3",
+            },
+            {
+                "title": "Optimize Water Usage",
+                "points": ["Repair minor leakage points within 7 days", "Adopt micro-irrigation for 30% farms"],
+                "sdg_tag": "SDG6",
+            },
+        ]
+        return defaults
+    return [_serialize(x) for x in items]
+
+# Health check
 @app.get("/test")
-def test_database():
-    """Test endpoint to check if database is available and accessible"""
-    response = {
-        "backend": "✅ Running",
-        "database": "❌ Not Available",
-        "database_url": None,
-        "database_name": None,
-        "connection_status": "Not Connected",
-        "collections": []
-    }
-    
+def test_services():
     try:
-        # Try to import database module
-        from database import db
-        
-        if db is not None:
-            response["database"] = "✅ Available"
-            response["database_url"] = "✅ Configured"
-            response["database_name"] = db.name if hasattr(db, 'name') else "✅ Connected"
-            response["connection_status"] = "Connected"
-            
-            # Try to list collections to verify connectivity
-            try:
-                collections = db.list_collection_names()
-                response["collections"] = collections[:10]  # Show first 10 collections
-                response["database"] = "✅ Connected & Working"
-            except Exception as e:
-                response["database"] = f"⚠️  Connected but Error: {str(e)[:50]}"
-        else:
-            response["database"] = "⚠️  Available but not initialized"
-            
-    except ImportError:
-        response["database"] = "❌ Database module not found (run enable-database first)"
+        collections = db.list_collection_names() if db else []
+        return {"backend": "running", "db": bool(db), "collections": collections[:10]}
     except Exception as e:
-        response["database"] = f"❌ Error: {str(e)[:50]}"
-    
-    # Check environment variables
-    import os
-    response["database_url"] = "✅ Set" if os.getenv("DATABASE_URL") else "❌ Not Set"
-    response["database_name"] = "✅ Set" if os.getenv("DATABASE_NAME") else "❌ Not Set"
-    
-    return response
-
+        return {"backend": "running", "db": False, "error": str(e)}
 
 if __name__ == "__main__":
     import uvicorn
